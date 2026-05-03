@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Document outline -->
+  <path d="M4 4h16v16H4z" rx="2"/>
+  <!-- Lines representing course steps -->
+  <line x1="8" y1="9" x2="16" y2="9"/>
+  <line x1="8" y1="12" x2="16" y2="12"/>
+  <line x1="8" y1="15" x2="13" y2="15"/>
+  <!-- Small edit pen at bottom-right -->
+  <path d="M16 16l2 2-2 0z"/>
+</svg>

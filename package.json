@@ -1,0 +1,114 @@
+{
+  "name": "instrktr-course-author",
+  "displayName": "Instrktr Course Author",
+  "description": "Visual authoring tool for Instrktr courses — manage steps, edit validators, and publish to a registry",
+  "version": "0.1.0",
+  "publisher": "instrktr",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/instrktr/instrktr-engine"
+  },
+  "license": "MIT",
+  "keywords": [
+    "learning",
+    "courses",
+    "education",
+    "authoring"
+  ],
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "instrktrAuthor.openCourse",
+        "title": "Instrktr Author: Open Course Folder"
+      },
+      {
+        "command": "instrktrAuthor.newCourse",
+        "title": "Instrktr Author: New Course…"
+      },
+      {
+        "command": "instrktrAuthor.openCurrentWorkspace",
+        "title": "Instrktr Author: Edit Course in Current Workspace"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "instrktrAuthor",
+          "title": "Course Author",
+          "icon": "media/icon-instrktr-similar.svg"
+        }
+      ]
+    },
+    "views": {
+      "instrktrAuthor": [
+        {
+          "type": "webview",
+          "id": "instrktrAuthor.welcome",
+          "name": "Course Author"
+        }
+      ]
+    },
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "instrktrAuthor.openCourse",
+          "when": "explorerResourceIsFolder"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Instrktr Course Author",
+      "properties": {
+        "instrktrAuthor.syntaxStatus": {
+          "type": "string",
+          "enum": [
+            "off",
+            "errors",
+            "always"
+          ],
+          "default": "always",
+          "description": "Controls JavaScript syntax status messages in validator, starter, and solution editors."
+        },
+        "instrktrAuthor.syntaxHighlighting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reserved for future editor integration. The built-in editor currently keeps native textarea rendering for readability."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "package": "vsce package --no-dependencies",
+    "typecheck": "npm run typecheck:extension && npm run typecheck:webview",
+    "lint": "npm run typecheck",
+    "typecheck:extension": "tsc --noEmit",
+    "typecheck:webview": "tsc -p tsconfig.webview.json --noEmit",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.93.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  },
+  "icon": "media/icon.png",
+  "files": [
+    "dist",
+    "media",
+    "LICENSE",
+    "README.md"
+  ]
+}
