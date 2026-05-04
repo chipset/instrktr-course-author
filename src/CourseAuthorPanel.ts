@@ -2,8 +2,9 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import { CourseDef, WebviewMessage, ExtensionMessage, AuthState, FileWrite, CustomSnippet, AuthorSettings } from './types';
 import * as path from 'path';
+import * as childProcess from 'child_process';
 import { CourseFileManager } from './CourseFileManager';
-import { RegistryPublisher } from './RegistryPublisher';
+import { PublishFileSnapshot, RegistryPublisher } from './RegistryPublisher';
 import { ValidatorTester } from './ValidatorTester';
 import { AssetManager } from './AssetManager';
 import { CourseImporter } from './CourseImporter';
@@ -88,6 +89,7 @@ export class CourseAuthorPanel {
       ],
     };
     await this._sendCourse();
+    await this._sendPublishRepo();
     await this._sendAssets();
   }
 
@@ -115,6 +117,7 @@ export class CourseAuthorPanel {
         await this._sendCourse();
         await this._sendAuth();
         await this._sendAssets();
+        await this._sendPublishRepo();
         this._send({ command: 'setPublishHistory', history: this._publisher.getHistory() });
         this._send({ command: 'setCustomSnippets', snippets: this._loadCustomSnippets() });
         this._send({ command: 'setSettings', settings: this._loadSettings() });
@@ -206,6 +209,9 @@ export class CourseAuthorPanel {
           msg.repo,
           msg.tags,
           msg.bumpType,
+          msg.createRepo ?? false,
+          msg.registryRepo,
+          msg.registryPath,
           msg.course,
           msg.fileWrites,
           msg.fileDeletes,
@@ -283,6 +289,18 @@ export class CourseAuthorPanel {
         break;
       }
 
+      case 'saveSettings': {
+        const cfg = vscode.workspace.getConfiguration('instrktrAuthor');
+        if (msg.settings.defaultRegistryRepo !== undefined) {
+          await cfg.update('defaultRegistryRepo', msg.settings.defaultRegistryRepo, vscode.ConfigurationTarget.Global);
+        }
+        if (msg.settings.defaultRegistryPath !== undefined) {
+          await cfg.update('defaultRegistryPath', msg.settings.defaultRegistryPath, vscode.ConfigurationTarget.Global);
+        }
+        this._send({ command: 'setSettings', settings: this._loadSettings() });
+        break;
+      }
+
       case 'signOut': {
         await vscode.window.showInformationMessage(
           'To sign out of GitHub, use the Accounts menu in the VS Code status bar.',
@@ -301,6 +319,8 @@ export class CourseAuthorPanel {
     return {
       syntaxStatus: cfg.get<AuthorSettings['syntaxStatus']>('syntaxStatus', 'always'),
       syntaxHighlighting: cfg.get<boolean>('syntaxHighlighting', true),
+      defaultRegistryRepo: cfg.get<string>('defaultRegistryRepo', ''),
+      defaultRegistryPath: cfg.get<string>('defaultRegistryPath', 'instrktr-registry.json'),
     };
   }
 
@@ -411,6 +431,9 @@ export class CourseAuthorPanel {
     repo: string,
     tags: string[],
     bumpType: 'major' | 'minor' | 'patch' | 'none',
+    createRepo: boolean,
+    registryRepo?: string,
+    registryPath?: string,
     courseSnapshot?: CourseDef,
     fileWrites?: FileWrite[],
     fileDeletes?: string[],
@@ -446,8 +469,9 @@ export class CourseAuthorPanel {
     this._send({ command: 'publishProgress', status: 'progress', message: 'Starting publish…' });
 
     try {
+      const files = await this._collectPublishFiles();
       const registryUrl = await this._publisher.publish(
-        course, repo, tags, session.accessToken,
+        course, repo, tags, session.accessToken, files, createRepo, registryRepo, registryPath,
         (msg) => this._send({ command: 'publishProgress', status: 'progress', message: msg }),
       );
 
@@ -457,6 +481,36 @@ export class CourseAuthorPanel {
       logError('Publish failed', err);
       this._send({ command: 'publishProgress', status: 'error', message: `Publish failed: ${err instanceof Error ? err.message : String(err)}` });
     }
+  }
+
+  private async _collectPublishFiles(): Promise<PublishFileSnapshot[]> {
+    const files: PublishFileSnapshot[] = [];
+    const excludedDirs = new Set(['.git', 'node_modules']);
+    const excludedFiles = new Set(['.DS_Store']);
+
+    const visit = async (dir: vscode.Uri, prefix = ''): Promise<void> => {
+      const entries = await vscode.workspace.fs.readDirectory(dir);
+      for (const [name, type] of entries) {
+        if (excludedFiles.has(name)) continue;
+        const relativePath = prefix ? `${prefix}/${name}` : name;
+        const uri = vscode.Uri.joinPath(dir, name);
+
+        if (type === vscode.FileType.Directory) {
+          if (!excludedDirs.has(name)) await visit(uri, relativePath);
+          continue;
+        }
+
+        if (type !== vscode.FileType.File) continue;
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        files.push({
+          path: relativePath,
+          contentBase64: Buffer.from(bytes).toString('base64'),
+        });
+      }
+    };
+
+    await visit(this._fileManager.courseDir);
+    return files.sort((a, b) => a.path.localeCompare(b.path));
   }
 
   private async _handleImportFromUrl(url: string): Promise<void> {
@@ -507,6 +561,27 @@ export class CourseAuthorPanel {
       ).toString(),
     }));
     this._send({ command: 'assetList', assets });
+  }
+
+  private async _sendPublishRepo(): Promise<void> {
+    const repo = await this._getGitHubRemoteRepo();
+    if (repo) this._send({ command: 'setPublishRepo', repo });
+  }
+
+  private async _getGitHubRemoteRepo(): Promise<string | undefined> {
+    return new Promise((resolve) => {
+      childProcess.execFile(
+        'git',
+        ['-C', this._fileManager.courseDir.fsPath, 'remote', 'get-url', 'origin'],
+        (err, stdout) => {
+          if (err) {
+            resolve(undefined);
+            return;
+          }
+          resolve(normalizeGitHubRepo(stdout.trim()));
+        },
+      );
+    });
   }
 
   private async _sendAuth(): Promise<void> {
@@ -573,4 +648,9 @@ function bumpVersion(version: string, type: 'major' | 'minor' | 'patch'): string
   if (type === 'major') return `${major + 1}.0.0`;
   if (type === 'minor') return `${major}.${minor + 1}.0`;
   return `${major}.${minor}.${patch + 1}`;
+}
+
+function normalizeGitHubRepo(remoteUrl: string): string | undefined {
+  const match = remoteUrl.match(/github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[/?#].*)?$/);
+  return match ? `${match[1]}/${match[2]}` : undefined;
 }

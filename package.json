@@ -28,7 +28,15 @@
     "commands": [
       {
         "command": "instrktrAuthor.openCourse",
-        "title": "Instrktr Author: Open Course Folder"
+        "title": "Instrktr Author: Open Course…"
+      },
+      {
+        "command": "instrktrAuthor.openLocalCourse",
+        "title": "Instrktr Author: Open Local Course Folder…"
+      },
+      {
+        "command": "instrktrAuthor.openGitCourse",
+        "title": "Instrktr Author: Clone Git Course…"
       },
       {
         "command": "instrktrAuthor.newCourse",
@@ -82,6 +90,16 @@
           "type": "boolean",
           "default": true,
           "description": "Reserved for future editor integration. The built-in editor currently keeps native textarea rendering for readability."
+        },
+        "instrktrAuthor.defaultRegistryRepo": {
+          "type": "string",
+          "default": "",
+          "description": "Default GitHub repository used when adding published courses to a registry repo."
+        },
+        "instrktrAuthor.defaultRegistryPath": {
+          "type": "string",
+          "default": "instrktr-registry.json",
+          "description": "Default registry JSON filename/path inside the registry repository."
         }
       }
     }

@@ -15,6 +15,7 @@ export class CourseImporter {
   async importFromUrl(
     rawUrl: string,
     onProgress: (msg: string) => void,
+    options: { preserveGit?: boolean } = {},
   ): Promise<vscode.Uri | null> {
     const match = rawUrl.match(GITHUB_URL_RE);
     if (!match) {
@@ -48,7 +49,7 @@ export class CourseImporter {
     }
 
     onProgress(`Cloning ${owner}/${repo}@${branch}…`);
-    await this._gitClone(owner, repo, branch, destDir, onProgress);
+    await this._gitClone(owner, repo, branch, destDir, onProgress, options);
 
     return vscode.Uri.file(destDir);
   }
@@ -85,13 +86,17 @@ export class CourseImporter {
     branch: string,
     destDir: string,
     onProgress: (msg: string) => void,
+    options: { preserveGit?: boolean } = {},
   ): Promise<void> {
     const cloneUrl = `https://github.com/${owner}/${repo}.git`;
+    const cloneArgs = options.preserveGit
+      ? ['clone', '--branch', branch, cloneUrl, destDir]
+      : ['clone', '--depth', '1', '--branch', branch, cloneUrl, destDir];
 
     await new Promise<void>((resolve, reject) => {
       const proc = childProcess.spawn(
         'git',
-        ['clone', '--depth', '1', '--branch', branch, cloneUrl, destDir],
+        cloneArgs,
         { stdio: 'pipe' },
       );
 
@@ -119,9 +124,12 @@ export class CourseImporter {
           } else {
             // Retry with "master"
             onProgress('Branch "main" not found, retrying with "master"…');
+            const retryArgs = options.preserveGit
+              ? ['clone', '--branch', 'master', cloneUrl, destDir]
+              : ['clone', '--depth', '1', '--branch', 'master', cloneUrl, destDir];
             const retry = childProcess.spawn(
               'git',
-              ['clone', '--depth', '1', '--branch', 'master', cloneUrl, destDir],
+              retryArgs,
               { stdio: 'pipe' },
             );
             retry.stderr?.on('data', (chunk: Buffer) => {
@@ -142,11 +150,13 @@ export class CourseImporter {
       });
     });
 
-    onProgress('Removing .git metadata…');
-    try {
-      fs.rmSync(path.join(destDir, '.git'), { recursive: true, force: true });
-    } catch {
-      // Non-fatal
+    if (!options.preserveGit) {
+      onProgress('Removing .git metadata…');
+      try {
+        fs.rmSync(path.join(destDir, '.git'), { recursive: true, force: true });
+      } catch {
+        // Non-fatal
+      }
     }
   }
 }

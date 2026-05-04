@@ -20,6 +20,8 @@ export class WelcomeProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage((msg: { command: string }) => {
       if (msg.command === 'openCourse') {
         vscode.commands.executeCommand('instrktrAuthor.openCourse');
+      } else if (msg.command === 'openGitCourse') {
+        vscode.commands.executeCommand('instrktrAuthor.openGitCourse');
       } else if (msg.command === 'newCourse') {
         vscode.commands.executeCommand('instrktrAuthor.newCourse');
       } else if (msg.command === 'openWorkspace') {
@@ -76,7 +78,8 @@ export class WelcomeProvider implements vscode.WebviewViewProvider {
   <h2>Course Author</h2>
   <p>Create and edit Instrktr courses with a visual editor.</p>
   <button class="btn" id="btn-workspace">Edit Course in Workspace</button>
-  <button class="btn secondary" id="btn-open">Open Course Folder…</button>
+  <button class="btn secondary" id="btn-open">Open Course…</button>
+  <button class="btn secondary" id="btn-open-git">Clone Git Course…</button>
   <hr class="divider">
   <button class="btn secondary" id="btn-new">New Course…</button>
   <script nonce="${nonce}">
@@ -84,6 +87,7 @@ export class WelcomeProvider implements vscode.WebviewViewProvider {
     function send(command) { vscode.postMessage({ command }); }
     document.getElementById('btn-workspace').addEventListener('click', function() { send('openWorkspace'); });
     document.getElementById('btn-open').addEventListener('click', function() { send('openCourse'); });
+    document.getElementById('btn-open-git').addEventListener('click', function() { send('openGitCourse'); });
     document.getElementById('btn-new').addEventListener('click', function() { send('newCourse'); });
   </script>
 </body>

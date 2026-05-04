@@ -33,10 +33,17 @@ let libraryCategory = SNIPPET_LIBRARY[0]?.id ?? '';
 let librarySearch = '';
 let showImport = false;
 let courseSearch = '';
+let publishRepoSuggestion = '';
 const pendingDeletedSteps: StepDef[] = [];
 const undoStack: CourseDef[] = [];
 const previewProgress: Record<string, ValidatorTestResult['status']> = {};
-let authorSettings: AuthorSettings = { syntaxStatus: 'always', syntaxHighlighting: true };
+let authorSettings: AuthorSettings = {
+  syntaxStatus: 'always',
+  syntaxHighlighting: true,
+  defaultRegistryRepo: '',
+  defaultRegistryPath: 'instrktr-registry.json',
+};
+let publishPanelVisible = false;
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -130,6 +137,13 @@ window.addEventListener('message', (event: MessageEvent) => {
       renderAuthBar();
       break;
 
+    case 'setPublishRepo': {
+      publishRepoSuggestion = msg.repo;
+      const repoInput = document.getElementById('pub-repo') as HTMLInputElement | null;
+      if (repoInput && !repoInput.value.trim()) repoInput.value = msg.repo;
+      break;
+    }
+
     case 'publishProgress':
       handlePublishProgressMsg(msg.status, msg.message, msg.registryUrl);
       break;
@@ -156,6 +170,7 @@ window.addEventListener('message', (event: MessageEvent) => {
 
     case 'setSettings':
       authorSettings = msg.settings;
+      updateSettingsFields();
       updateSyntaxStatus('validator');
       updateSyntaxStatus('starter');
       updateSyntaxStatus('solution');
@@ -367,14 +382,46 @@ function renderMarkdown(md: string): string {
     `<img src="${resolvePreviewAssetUri(src)}" alt="${alt}" class="markdown-image">`,
   );
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>');
-  html = html.replace(/^[-*]\s\[( |x)]\s(.+)$/gmi, (_, checked, text) => `<li><input type="checkbox" disabled${checked.toLowerCase() === 'x' ? ' checked' : ''}> ${text}</li>`);
-  html = html.replace(/^[-*]\s(.+)$/gm, '<li>$1</li>').replace(/(<li>[\s\S]+?<\/li>)/g, '<ul>$1</ul>');
-  html = html.replace(/^\d+\.\s(.+)$/gm, '<li>$1</li>').replace(/(<li>[\s\S]+?<\/li>)/g, '<ol>$1</ol>');
+  html = html.replace(/^(?:(?:[-*]\s(?:\[(?: |x)]\s)?|\d+\.\s).+(?:\n|$))+/gmi, renderMarkdownListBlock);
   html = html.split(/\n\n+/).map((p) =>
-    p.startsWith('<h') || p.startsWith('<ul') || p.startsWith('<pre') ? p
+    p.startsWith('<h') || p.startsWith('<ul') || p.startsWith('<ol') || p.startsWith('<pre') || p.startsWith('<table') ? p
       : `<p>${p.replace(/\n/g, '<br>')}</p>`,
   ).join('\n');
   return `<div class="markdown-preview">${html}</div>`;
+}
+
+function renderMarkdownListBlock(block: string): string {
+  const lines = block.trimEnd().split('\n');
+  const parts: string[] = [];
+  let currentTag: 'ul' | 'ol' | null = null;
+
+  const open = (tag: 'ul' | 'ol') => {
+    if (currentTag === tag) return;
+    if (currentTag) parts.push(`</${currentTag}>`);
+    parts.push(`<${tag}>`);
+    currentTag = tag;
+  };
+
+  for (const line of lines) {
+    const ordered = line.match(/^\d+\.\s(.+)$/);
+    if (ordered) {
+      open('ol');
+      parts.push(`<li>${ordered[1]}</li>`);
+      continue;
+    }
+
+    const unordered = line.match(/^[-*]\s(?:\[( |x)]\s)?(.+)$/i);
+    if (unordered) {
+      open('ul');
+      const checkbox = unordered[1] === undefined
+        ? ''
+        : `<input type="checkbox" disabled${unordered[1].toLowerCase() === 'x' ? ' checked' : ''}> `;
+      parts.push(`<li>${checkbox}${unordered[2]}</li>`);
+    }
+  }
+
+  if (currentTag) parts.push(`</${currentTag}>`);
+  return parts.join('\n');
 }
 
 // ─── Main render ─────────────────────────────────────────────────────────────
@@ -482,6 +529,8 @@ function buildCourseMetaSection(): HTMLElement {
     { label: 'Version', id: 'meta-version', value: course.version, placeholder: '1.0.0' },
     { label: 'Engine', id: 'meta-engine', value: course.engineVersion, placeholder: '>=0.1.0' },
     { label: 'Description', id: 'meta-description', value: course.description ?? '', placeholder: 'Short description…' },
+    { label: 'Default Registry Repo', id: 'settings-default-registry-repo', value: authorSettings.defaultRegistryRepo, placeholder: 'owner/registry-repo or GitHub URL' },
+    { label: 'Default Registry File', id: 'settings-default-registry-path', value: authorSettings.defaultRegistryPath, placeholder: 'instrktr-registry.json' },
   ]) {
     const row = el('div', { class: 'field-row' });
     row.appendChild(el('label', { for: f.id, class: 'field-label' }, f.label));
@@ -571,10 +620,10 @@ function renderAssetItems(container: HTMLElement, assets: AssetInfo[]): void {
     return;
   }
   for (const asset of assets) {
-    const row = el('div', { class: 'asset-row' });
+    const row = el('div', { class: 'asset-row', title: asset.relativePath });
     row.appendChild(el('span', { class: 'asset-icon' }, asset.isImage ? '🖼' : '📄'));
     const info = el('div', { class: 'asset-info' });
-    info.appendChild(el('span', { class: 'asset-name' }, asset.filename));
+    info.appendChild(el('span', { class: 'asset-name', title: asset.relativePath }, asset.filename));
     info.appendChild(el('span', { class: 'asset-size' }, fmtBytes(asset.size)));
     row.appendChild(info);
     const copyBtn = el('button', {
@@ -953,7 +1002,7 @@ function renderHints(container: HTMLElement, hints: string[]): void {
 // ─── Publish panel ───────────────────────────────────────────────────────────
 
 function buildPublishPanel(): HTMLElement {
-  const panel = el('div', { class: 'publish-panel hidden', id: 'publish-panel' });
+  const panel = el('div', { class: `publish-panel${publishPanelVisible ? '' : ' hidden'}`, id: 'publish-panel' });
 
   const header = el('div', { class: 'publish-header' });
   header.appendChild(el('h3', { class: 'publish-title' }, 'Publish Course'));
@@ -964,7 +1013,9 @@ function buildPublishPanel(): HTMLElement {
 
   const repoRow = el('div', { class: 'field-row' });
   repoRow.appendChild(el('label', { for: 'pub-repo', class: 'field-label' }, 'GitHub Repo'));
-  repoRow.appendChild(el('input', { id: 'pub-repo', class: 'field-input', type: 'text', placeholder: 'owner/repo-name' }));
+  const repoInput = el('input', { id: 'pub-repo', class: 'field-input', type: 'text', placeholder: 'owner/repo-name' });
+  repoInput.value = publishRepoSuggestion;
+  repoRow.appendChild(repoInput);
   repoRow.appendChild(el('button', { class: 'btn btn-ghost btn-sm', id: 'load-repos-btn', type: 'button' }, 'Pick repo'));
   repoRow.appendChild(el('span', { class: 'field-help' }, 'e.g. myuser/course-my-course'));
   body.appendChild(repoRow);
@@ -974,6 +1025,35 @@ function buildPublishPanel(): HTMLElement {
   tagsRow.appendChild(el('input', { id: 'pub-tags', class: 'field-input', type: 'text', placeholder: 'git, beginner' }));
   tagsRow.appendChild(el('span', { class: 'field-help' }, 'Comma-separated'));
   body.appendChild(tagsRow);
+
+  const createRepoRow = el('div', { class: 'field-row' });
+  createRepoRow.appendChild(el('label', { class: 'field-label' }, 'Repository'));
+  const createRepoLabel = el('label', { class: 'checkbox-label' });
+  createRepoLabel.appendChild(el('input', { id: 'pub-create-repo', type: 'checkbox' }));
+  createRepoLabel.appendChild(document.createTextNode(' Create repo if missing'));
+  createRepoRow.appendChild(createRepoLabel);
+  createRepoRow.appendChild(el('span', { class: 'field-help' }, 'Creates a public user/org repo when the target does not exist'));
+  body.appendChild(createRepoRow);
+
+  const registryRow = el('div', { class: 'field-row publish-registry-row' });
+  registryRow.appendChild(el('label', { class: 'field-label' }, 'Registry'));
+  const registryLabel = el('label', { class: 'checkbox-label' });
+  const registryCheckbox = el('input', { id: 'pub-add-registry', type: 'checkbox' });
+  if (authorSettings.defaultRegistryRepo) {
+    registryCheckbox.checked = true;
+    registryCheckbox.disabled = true;
+  }
+  registryLabel.appendChild(registryCheckbox);
+  registryLabel.appendChild(document.createTextNode(authorSettings.defaultRegistryRepo ? ' Add to registry repo (settings default)' : ' Add to registry repo'));
+  registryRow.appendChild(registryLabel);
+  const registryInput = el('input', { id: 'pub-registry-repo', class: 'field-input', type: 'text', placeholder: 'owner/registry-repo or GitHub URL' });
+  registryInput.value = authorSettings.defaultRegistryRepo;
+  registryRow.appendChild(registryInput);
+  const registryPathInput = el('input', { id: 'pub-registry-path', class: 'field-input', type: 'text', placeholder: 'registry filename/path' });
+  registryPathInput.value = authorSettings.defaultRegistryPath;
+  registryRow.appendChild(registryPathInput);
+  registryRow.appendChild(el('span', { class: 'field-help' }, 'Updates this JSON registry file in the registry repo'));
+  body.appendChild(registryRow);
 
   const bumpRow = el('div', { class: 'field-row' });
   bumpRow.appendChild(el('label', { class: 'field-label' }, 'Version Bump'));
@@ -1146,9 +1226,11 @@ function attachEventListeners(): void {
 
   // Publish panel toggle
   document.getElementById('publish-btn')?.addEventListener('click', () => {
-    document.getElementById('publish-panel')?.classList.toggle('hidden');
+    publishPanelVisible = !publishPanelVisible;
+    document.getElementById('publish-panel')?.classList.toggle('hidden', !publishPanelVisible);
   });
   document.getElementById('publish-close')?.addEventListener('click', () => {
+    publishPanelVisible = false;
     document.getElementById('publish-panel')?.classList.add('hidden');
   });
   document.getElementById('confirm-publish-btn')?.addEventListener('click', handlePublish);
@@ -1408,6 +1490,37 @@ function attachMetaListeners(): void {
   bind('meta-version', (v) => { if (state.course) state.course.version = v; });
   bind('meta-engine', (v) => { if (state.course) state.course.engineVersion = v; });
   bind('meta-description', (v) => { if (state.course) state.course.description = v; });
+
+  const bindSetting = (id: string, key: keyof Pick<AuthorSettings, 'defaultRegistryRepo' | 'defaultRegistryPath'>) => {
+    const input = document.getElementById(id) as HTMLInputElement | null;
+    input?.addEventListener('change', () => {
+      authorSettings = { ...authorSettings, [key]: input.value.trim() };
+      post({ command: 'saveSettings', settings: { [key]: authorSettings[key] } });
+      updatePublishRegistryDefaults();
+    });
+  };
+  bindSetting('settings-default-registry-repo', 'defaultRegistryRepo');
+  bindSetting('settings-default-registry-path', 'defaultRegistryPath');
+}
+
+function updateSettingsFields(): void {
+  const repo = document.getElementById('settings-default-registry-repo') as HTMLInputElement | null;
+  if (repo && repo.value !== authorSettings.defaultRegistryRepo) repo.value = authorSettings.defaultRegistryRepo;
+  const path = document.getElementById('settings-default-registry-path') as HTMLInputElement | null;
+  if (path && path.value !== authorSettings.defaultRegistryPath) path.value = authorSettings.defaultRegistryPath;
+  updatePublishRegistryDefaults();
+}
+
+function updatePublishRegistryDefaults(): void {
+  const repo = document.getElementById('pub-registry-repo') as HTMLInputElement | null;
+  if (repo && !repo.value.trim()) repo.value = authorSettings.defaultRegistryRepo;
+  const path = document.getElementById('pub-registry-path') as HTMLInputElement | null;
+  if (path && !path.value.trim()) path.value = authorSettings.defaultRegistryPath;
+  const enabled = document.getElementById('pub-add-registry') as HTMLInputElement | null;
+  if (enabled && authorSettings.defaultRegistryRepo) {
+    enabled.checked = true;
+    enabled.disabled = true;
+  }
 }
 
 function attachSearchListeners(): void {
@@ -1523,11 +1636,13 @@ async function validateCourse(): Promise<void> {
   if (!state.course) return;
   const problems: string[] = [];
   const ids = new Set<string>();
+  const availableAssets = new Set(state.assets.map((asset) => asset.relativePath));
   if (!state.course.id) problems.push('Course ID is missing.');
   if (!/^\d+\.\d+\.\d+/.test(state.course.version)) problems.push(`Version "${state.course.version}" is not valid semver.`);
   for (const [i, step] of state.course.steps.entries()) {
     if (ids.has(step.id)) problems.push(`Duplicate step ID: ${step.id}`);
     ids.add(step.id);
+    const fileContents = new Map<string, { label: string; path: string; content: string }>();
     for (const [label, path] of Object.entries({ instructions: step.instructions, validator: step.validator, starter: step.starter, solution: step.solution })) {
       if (!path) {
         if (label === 'instructions') problems.push(`Step ${i + 1} has no instructions path.`);
@@ -1536,8 +1651,9 @@ async function validateCourse(): Promise<void> {
       if (path.includes('..')) problems.push(`Step ${i + 1} ${label} path is unsafe: ${path}`);
       const content = await readFile(path);
       if (!content && label !== 'starter' && label !== 'solution') problems.push(`Step ${i + 1} ${label} file is missing or empty: ${path}`);
+      fileContents.set(label, { label, path, content });
     }
-    const validator = step.validator ? await readFile(step.validator) : '';
+    const validator = fileContents.get('validator')?.content ?? '';
     const validatorSyntax = getJavaScriptSyntaxError(validator);
     if (validatorSyntax) {
       problems.push(`Step ${i + 1} validator JavaScript syntax: ${validatorSyntax}`);
@@ -1545,13 +1661,52 @@ async function validateCourse(): Promise<void> {
     for (const warning of staticValidatorWarnings(validator)) {
       problems.push(`Step ${i + 1} validator risk: ${warning}`);
     }
-    const instructions = step.instructions ? await readFile(step.instructions) : '';
-    for (const match of instructions.matchAll(/!\[[^\]]*]\((assets\/[^)]+)\)/g)) {
-      const assetPath = match[1];
-      if (!state.assets.some((a) => a.relativePath === assetPath)) problems.push(`Broken asset link in step ${i + 1}: ${assetPath}`);
+    for (const file of fileContents.values()) {
+      for (const assetPath of findAssetReferences(file.content, file.path)) {
+        if (!availableAssets.has(assetPath)) problems.push(`Broken asset link in step ${i + 1} ${file.label}: ${assetPath}`);
+      }
     }
   }
   showTextDialog('Course Validation', problems.length ? problems.map((p) => `• ${p}`).join('\n') : '✓ No course structure issues found.');
+}
+
+function findAssetReferences(content: string, sourcePath: string): string[] {
+  const refs = new Set<string>();
+  const patterns = [
+    /!?\[[^\]]*]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g,
+    /\b(?:src|href)\s*=\s*["']([^"']+)["']/gi,
+    /["'`]((?:(?:\.{1,2}\/)+|\/)?assets\/[^"'`\s)]+)["'`]/g,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      const normalized = normalizeAssetReference(match[1], sourcePath);
+      if (normalized) refs.add(normalized);
+    }
+  }
+
+  return [...refs];
+}
+
+function normalizeAssetReference(ref: string, sourcePath: string): string | null {
+  if (/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(ref)) return null;
+  const withoutAnchor = ref.split(/[?#]/, 1)[0];
+  if (!withoutAnchor) return null;
+
+  const sourceDir = sourcePath.split('/').slice(0, -1);
+  const parts = withoutAnchor.startsWith('/')
+    ? withoutAnchor.slice(1).split('/')
+    : [...sourceDir, ...withoutAnchor.split('/')];
+  const normalized: string[] = [];
+
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    if (part === '..') normalized.pop();
+    else normalized.push(part);
+  }
+
+  const assetIndex = normalized.indexOf('assets');
+  return assetIndex >= 0 ? normalized.slice(assetIndex).join('/') : null;
 }
 
 function staticValidatorWarnings(code: string): string[] {
@@ -1975,6 +2130,12 @@ async function handlePublish(): Promise<void> {
   if (!await requireSavedChanges('publishing')) return;
   const repo = (document.getElementById('pub-repo') as HTMLInputElement | null)?.value.trim() ?? '';
   const tagsRaw = (document.getElementById('pub-tags') as HTMLInputElement | null)?.value.trim() ?? '';
+  const createRepo = (document.getElementById('pub-create-repo') as HTMLInputElement | null)?.checked ?? false;
+  const addToRegistry = Boolean(authorSettings.defaultRegistryRepo)
+    || ((document.getElementById('pub-add-registry') as HTMLInputElement | null)?.checked ?? false);
+  const registryRepoRaw = (document.getElementById('pub-registry-repo') as HTMLInputElement | null)?.value.trim() ?? '';
+  const registryPath = (document.getElementById('pub-registry-path') as HTMLInputElement | null)?.value.trim() || authorSettings.defaultRegistryPath;
+  const registryRepo = addToRegistry ? normalizeGitHubRepoInput(registryRepoRaw) : '';
   const bumpType = (document.querySelector<HTMLInputElement>('input[name="bump-type"]:checked')?.value as
     'major' | 'minor' | 'patch' | 'none') ?? 'patch';
 
@@ -1983,12 +2144,22 @@ async function handlePublish(): Promise<void> {
     if (area) { area.classList.remove('hidden'); area.innerHTML = '<div class="progress-msg error">✕ Enter a valid GitHub repo (owner/repo-name).</div>'; }
     return;
   }
+  if (addToRegistry && !registryRepo) {
+    const area = document.getElementById('publish-progress');
+    if (area) { area.classList.remove('hidden'); area.innerHTML = '<div class="progress-msg error">✕ Enter a valid registry repo (owner/repo or GitHub URL).</div>'; }
+    return;
+  }
+  if (addToRegistry && (!registryPath || registryPath.includes('..') || registryPath.startsWith('/'))) {
+    const area = document.getElementById('publish-progress');
+    if (area) { area.classList.remove('hidden'); area.innerHTML = '<div class="progress-msg error">✕ Enter a safe registry filename/path.</div>'; }
+    return;
+  }
   const tags = tagsRaw ? tagsRaw.split(',').map((t) => t.trim()).filter(Boolean) : [];
   const fileWrites = collectPendingFileWrites(saveCurrentTabContent(false));
   const nextVersion = bumpType === 'none' ? state.course.version : bumpPreview(state.course.version, bumpType);
   const confirmed = await confirmDialog(
     'Publish Course',
-    `Publish dry run:\n\nRepo: ${repo}\nVersion: ${state.course.version} → ${nextVersion}\nTags: ${tags.join(', ') || '(none)'}\nRegistry entry: ${state.course.id} / ${state.course.title}\n\nProceed with GitHub release and registry update?`,
+    `Publish dry run:\n\nRepo: ${repo}${createRepo ? ' (create if missing)' : ''}\nRegistry repo: ${registryRepo || '(Gist only)'}${registryRepo ? `\nRegistry file: ${registryPath}` : ''}\nVersion: ${state.course.version} → ${nextVersion}\nTags: ${tags.join(', ') || '(none)'}\nRegistry entry: ${state.course.id} / ${state.course.title}\n\nThis will ${createRepo ? 'create a public repo if needed, ' : ''}commit the current course files to GitHub, tag that commit, create a release, update the registry Gist${registryRepo ? ', and update the registry repo' : ''}.\n\nProceed?`,
     'Publish',
   );
   if (!confirmed) return;
@@ -1997,10 +2168,21 @@ async function handlePublish(): Promise<void> {
     repo,
     tags,
     bumpType,
+    createRepo,
+    registryRepo: registryRepo || undefined,
+    registryPath: registryRepo ? registryPath : undefined,
     course: state.course,
     fileWrites,
     fileDeletes: Array.from(pendingDeletedFilePaths),
   });
+}
+
+function normalizeGitHubRepoInput(value: string): string {
+  const trimmed = value.trim();
+  const short = trimmed.match(/^([\w.\-]+)\/([\w.\-]+)$/);
+  if (short) return `${short[1]}/${short[2]}`;
+  const url = trimmed.match(/github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[/?#].*)?$/);
+  return url ? `${url[1]}/${url[2]}` : '';
 }
 
 // ─── Feature 2: Course Preview overlay ───────────────────────────────────────

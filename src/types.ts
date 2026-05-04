@@ -60,6 +60,8 @@ export interface CustomSnippet {
 export interface AuthorSettings {
   syntaxStatus: 'off' | 'errors' | 'always';
   syntaxHighlighting: boolean;
+  defaultRegistryRepo: string;
+  defaultRegistryPath: string;
 }
 
 // ─── Webview → Extension ────────────────────────────────────────────────────
@@ -72,13 +74,14 @@ export type WebviewMessage =
   | { command: 'renameFile'; oldPath: string; newPath: string; requestId?: string }
   | { command: 'createStepScaffold'; stepIndex: number; step: StepDef }
   | { command: 'deleteFiles'; filePaths: string[] }
-  | { command: 'publishCourse'; repo: string; tags: string[]; bumpType: 'major' | 'minor' | 'patch' | 'none'; course?: CourseDef; fileWrites?: FileWrite[]; fileDeletes?: string[] }
+  | { command: 'publishCourse'; repo: string; tags: string[]; bumpType: 'major' | 'minor' | 'patch' | 'none'; createRepo?: boolean; registryRepo?: string; registryPath?: string; course?: CourseDef; fileWrites?: FileWrite[]; fileDeletes?: string[] }
   | { command: 'signIn' }
   | { command: 'signOut' }
   | { command: 'listRepos' }
   | { command: 'listWorkspaceCourses' }
   | { command: 'openWorkspaceCourse'; courseDir: string }
   | { command: 'saveCustomSnippets'; snippets: CustomSnippet[] }
+  | { command: 'saveSettings'; settings: Partial<AuthorSettings> }
   // Feature 1 – validator testing
   | { command: 'runValidator'; stepIndex: number; course?: CourseDef; fileWrites?: FileWrite[] }
   // Feature 4 – asset management
@@ -101,6 +104,7 @@ export type ExtensionMessage =
   | { command: 'setWorkspaceCourses'; courses: string[] }
   | { command: 'setCustomSnippets'; snippets: CustomSnippet[] }
   | { command: 'setSettings'; settings: AuthorSettings }
+  | { command: 'setPublishRepo'; repo: string }
   | { command: 'publishProgress'; status: 'progress' | 'success' | 'error'; message: string; registryUrl?: string }
   | { command: 'error'; message: string }
   // Feature 1 – validator testing

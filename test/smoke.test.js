@@ -30,6 +30,29 @@ test('webview preview supports asset image rendering', () => {
   assert.match(panel, /localResourceRoots:[\s\S]*courseDir/);
 });
 
+test('asset list exposes full file path in hover tooltips', () => {
+  const main = read('webview-src/main.ts');
+  assert.match(main, /class: 'asset-row', title: asset\.relativePath/);
+  assert.match(main, /class: 'asset-name', title: asset\.relativePath/);
+});
+
+test('course validation checks asset references across step files', () => {
+  const main = read('webview-src/main.ts');
+  assert.match(main, /findAssetReferences\(file\.content, file\.path\)/);
+  assert.match(main, /normalizeAssetReference/);
+  assert.match(main, /src\|href/);
+  assert.match(main, /starter: step\.starter/);
+  assert.match(main, /solution: step\.solution/);
+  assert.match(main, /Broken asset link in step \$\{i \+ 1\} \$\{file\.label\}/);
+});
+
+test('markdown preview keeps ordered list items in a single list', () => {
+  const main = read('webview-src/main.ts');
+  assert.match(main, /renderMarkdownListBlock/);
+  assert.match(main, /open\('ol'\)/);
+  assert.ok(!main.includes('.replace(/(<li>[\\s\\S]+?<\\/li>)/g'), 'list items should be grouped before wrapping');
+});
+
 test('step templates can scaffold starter files', () => {
   const templates = read('webview-src/stepTemplates.ts');
   const main = read('webview-src/main.ts');
@@ -171,6 +194,34 @@ test('extension exposes repo, course switcher, custom snippet, and file rename m
   assert.match(main, /handleRenameResult/);
 });
 
+test('git-connected courses prefill publish repo from origin remote', () => {
+  const types = read('src/types.ts');
+  const panel = read('src/CourseAuthorPanel.ts');
+  const main = read('webview-src/main.ts');
+  assert.match(types, /setPublishRepo/);
+  assert.match(panel, /remote', 'get-url', 'origin'/);
+  assert.match(panel, /normalizeGitHubRepo/);
+  assert.match(panel, /command: 'setPublishRepo'/);
+  assert.match(main, /publishRepoSuggestion/);
+  assert.match(main, /case 'setPublishRepo'/);
+  assert.match(main, /if \(repoInput && !repoInput\.value\.trim\(\)\) repoInput\.value = msg\.repo/);
+});
+
+test('opening a course can clone a git-connected repository', () => {
+  const ext = read('src/extension.ts');
+  const importer = read('src/CourseImporter.ts');
+  const welcome = read('src/WelcomeProvider.ts');
+  const pkg = JSON.parse(read('package.json'));
+  assert.match(ext, /openGitCourse/);
+  assert.match(ext, /Clone from Git repo/);
+  assert.match(ext, /preserveGit: true/);
+  assert.match(importer, /preserveGit\?: boolean/);
+  assert.match(importer, /options\.preserveGit[\s\S]*\['clone', '--branch'/);
+  assert.match(importer, /Removing \.git metadata/);
+  assert.match(welcome, /Clone Git Course/);
+  assert.ok(pkg.contributes.commands.some((cmd) => cmd.command === 'instrktrAuthor.openGitCourse'));
+});
+
 test('dirty course actions prompt users to save first', () => {
   const main = read('webview-src/main.ts');
   assert.match(main, /requireSavedChanges/);
@@ -196,6 +247,8 @@ test('package contributes syntax editor settings', () => {
   const props = pkg.contributes.configuration.properties;
   assert.ok(props['instrktrAuthor.syntaxStatus']);
   assert.ok(props['instrktrAuthor.syntaxHighlighting']);
+  assert.ok(props['instrktrAuthor.defaultRegistryRepo']);
+  assert.ok(props['instrktrAuthor.defaultRegistryPath']);
 });
 
 test('ci workflow packages the vsix artifact', () => {
@@ -208,10 +261,53 @@ test('ci workflow packages the vsix artifact', () => {
 
 test('publisher explicitly creates version git tag before release', () => {
   const publisher = read('src/RegistryPublisher.ts');
+  const panel = read('src/CourseAuthorPanel.ts');
+  assert.match(publisher, /_commitFilesToDefaultBranch/);
+  assert.match(publisher, /_ensureRepo/);
+  assert.match(publisher, /\/user\/repos/);
+  assert.match(publisher, /\/orgs\/\$\{owner\}\/repos/);
+  assert.match(publisher, /refs\/heads\/\$\{defaultBranch\}/);
   assert.match(publisher, /_ensureTag/);
+  assert.match(publisher, /targetSha/);
+  assert.match(publisher, /Publish course v\$\{version\}/);
   assert.match(publisher, /refs\/tags\/\$\{tagName\}/);
   assert.match(publisher, /git\/ref\/heads/);
   assert.match(publisher, /git\/refs/);
+  assert.match(panel, /_collectPublishFiles/);
+  assert.match(panel, /contentBase64/);
+  assert.match(panel, /this\._publisher\.publish\([\s\S]*files, createRepo, registryRepo/);
+});
+
+test('publish panel can create a missing GitHub repo', () => {
+  const types = read('src/types.ts');
+  const main = read('webview-src/main.ts');
+  assert.match(types, /createRepo\?: boolean/);
+  assert.match(main, /pub-create-repo/);
+  assert.match(main, /Create repo if missing/);
+  assert.match(main, /createRepo/);
+});
+
+test('publish can update a registry repository', () => {
+  const types = read('src/types.ts');
+  const panel = read('src/CourseAuthorPanel.ts');
+  const publisher = read('src/RegistryPublisher.ts');
+  const main = read('webview-src/main.ts');
+  assert.match(types, /registryRepo\?: string/);
+  assert.match(types, /registryPath\?: string/);
+  assert.match(main, /pub-add-registry/);
+  assert.match(main, /pub-registry-repo/);
+  assert.match(main, /pub-registry-path/);
+  assert.match(main, /normalizeGitHubRepoInput/);
+  assert.match(main, /publishPanelVisible/);
+  assert.match(main, /Boolean\(authorSettings\.defaultRegistryRepo\)/);
+  assert.match(main, /Add to registry repo \(settings default\)/);
+  assert.match(main, /registryCheckbox\.disabled = true/);
+  assert.match(panel, /defaultRegistryRepo/);
+  assert.match(panel, /defaultRegistryPath/);
+  assert.match(publisher, /_upsertRegistryRepo/);
+  assert.match(publisher, /normalizeRegistryPath/);
+  assert.match(publisher, /\/contents\/\$\{encodedPath\}/);
+  assert.match(publisher, /raw\.githubusercontent\.com/);
 });
 
 test('validator tester supports shell-backed snippets', () => {

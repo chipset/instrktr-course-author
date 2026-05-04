@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { CourseAuthorPanel } from './CourseAuthorPanel';
 import { WelcomeProvider } from './WelcomeProvider';
 import { CourseFileManager } from './CourseFileManager';
+import { CourseImporter } from './CourseImporter';
 import { logError } from './logger';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -18,18 +19,90 @@ export function activate(context: vscode.ExtensionContext): void {
   // Open a course folder chosen via file picker
   context.subscriptions.push(
     vscode.commands.registerCommand('instrktrAuthor.openCourse', async () => {
-      const uris = await vscode.window.showOpenDialog({
-        canSelectFolders: true,
-        canSelectFiles: false,
-        canSelectMany: false,
-        title: 'Select a course folder (containing course.json)',
-        openLabel: 'Open Course',
-      });
-      if (!uris || uris.length === 0) return;
-      const courseDir = uris[0];
+      const source = await vscode.window.showQuickPick(
+        [
+          { label: 'Open local folder', description: 'Choose a course folder already on disk', sourceType: 'local' as const },
+          { label: 'Clone from Git repo', description: 'Download from GitHub and keep git history connected', sourceType: 'git' as const },
+        ],
+        {
+          placeHolder: 'Open a local course or clone a git-connected course',
+          title: 'Open Course',
+        },
+      );
+      if (!source) return;
+
+      if (source.sourceType === 'git') {
+        await openCourseFromGit(extensionUri, globalState);
+        return;
+      }
+
+      const courseDir = await pickLocalCourseFolder();
+      if (!courseDir) return;
       await openCourse(courseDir, extensionUri, globalState);
     }),
   );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('instrktrAuthor.openGitCourse', async () => {
+      await openCourseFromGit(extensionUri, globalState);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('instrktrAuthor.openLocalCourse', async () => {
+      const courseDir = await pickLocalCourseFolder();
+      if (!courseDir) return;
+      await openCourse(courseDir, extensionUri, globalState);
+    }),
+  );
+
+  async function pickLocalCourseFolder(): Promise<vscode.Uri | undefined> {
+    const uris = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      title: 'Select a course folder (containing course.json)',
+      openLabel: 'Open Course',
+    });
+    return uris?.[0];
+  }
+
+  async function openCourseFromGit(
+    extensionUri: vscode.Uri,
+    globalState: vscode.Memento,
+  ): Promise<void> {
+    const url = await vscode.window.showInputBox({
+      prompt: 'GitHub repository URL',
+      placeHolder: 'https://github.com/owner/course-repo',
+      validateInput: (v) => (v.trim() ? undefined : 'Enter a GitHub repository URL'),
+    });
+    if (!url) return;
+
+    const importer = new CourseImporter();
+    try {
+      const courseDir = await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: 'Cloning course repository',
+        cancellable: false,
+      }, async (progress) => importer.importFromUrl(
+        url,
+        (message) => progress.report({ message }),
+        { preserveGit: true },
+      ));
+      if (!courseDir) return;
+      await openCourse(courseDir, extensionUri, globalState);
+      const openFolder = await vscode.window.showInformationMessage(
+        `Course cloned with git history at ${courseDir.fsPath}`,
+        'Open Folder',
+      );
+      if (openFolder === 'Open Folder') {
+        await vscode.commands.executeCommand('vscode.openFolder', courseDir, { forceNewWindow: false });
+      }
+    } catch (err) {
+      logError('Open git course failed', err);
+      vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   // Open the course in the currently-open workspace folder
   context.subscriptions.push(
