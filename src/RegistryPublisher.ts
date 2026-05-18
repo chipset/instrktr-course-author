@@ -1,20 +1,16 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { CourseDef, PublishHistoryEntry } from './types';
 import { logError } from './logger';
 
 const MAX_HISTORY = 20;
 
 const API = 'https://api.github.com';
-const REGISTRY_GIST_FILENAME = 'instrktr-registry.json';
-const REGISTRY_GIST_DESCRIPTION = 'Instrktr — personal course registry';
+const DEFAULT_REGISTRY_URL = 'https://raw.githubusercontent.com/chipset/instrktr-registry/refs/heads/main/registry.json';
 const REQUEST_TIMEOUT_MS = 15_000;
 
 export class RegistryPublisher {
-  private _registryGistId: string | undefined;
-
-  constructor(private readonly _globalState: vscode.Memento) {
-    this._registryGistId = this._globalState.get<string>('authorRegistryGistId');
-  }
+  constructor(private readonly _globalState: vscode.Memento) {}
 
   getHistory(): PublishHistoryEntry[] {
     return this._globalState.get<PublishHistoryEntry[]>('publishHistory', []);
@@ -25,23 +21,59 @@ export class RegistryPublisher {
     repo: string,
     tags: string[],
     token: string,
+    courseDir: vscode.Uri,
     onProgress: (msg: string) => void,
   ): Promise<string> {
-    // 1. Ensure Git tag exists, then create GitHub release
+    // 1. Sync course files, ensure Git tag exists, then create GitHub release
+    onProgress(`Uploading course files to ${repo}…`);
+    await this._syncCourseFiles(token, repo, courseDir, course.version, onProgress);
     onProgress(`Ensuring git tag v${course.version} exists on ${repo}…`);
     await this._ensureTag(token, repo, course.version);
     onProgress(`Creating release v${course.version} on ${repo}…`);
     const releaseHtmlUrl = await this._createRelease(token, repo, course.version);
     onProgress(`Release: ${releaseHtmlUrl}`);
 
-    // 2. Update personal registry Gist
-    onProgress('Updating registry Gist…');
+    // 2. Update personal registry
+    onProgress('Updating registry…');
     const registryUrl = await this._upsertRegistry(token, course, repo, tags);
 
     // 3. Persist to history
     await this._recordHistory({ version: course.version, date: new Date().toISOString(), repo, registryUrl });
 
     return registryUrl;
+  }
+
+  async repositoryExists(token: string, repo: string): Promise<boolean> {
+    try {
+      await this._request('GET', `/repos/${repo}`, token);
+      return true;
+    } catch (err) {
+      if (this._isNotFound(err)) return false;
+      throw err;
+    }
+  }
+
+  async createRepository(
+    token: string,
+    repo: string,
+    course: CourseDef,
+  ): Promise<void> {
+    const [owner, name] = repo.split('/');
+    if (!owner || !name) {
+      throw new Error('Repository must use owner/repo-name format.');
+    }
+
+    const user = await this._request('GET', '/user', token) as { login: string };
+    const path = owner.toLowerCase() === user.login.toLowerCase()
+      ? '/user/repos'
+      : `/orgs/${encodeURIComponent(owner)}/repos`;
+
+    await this._request('POST', path, token, {
+      name,
+      description: course.description || course.title,
+      private: false,
+      auto_init: true,
+    });
   }
 
   private async _recordHistory(entry: PublishHistoryEntry): Promise<void> {
@@ -81,19 +113,101 @@ export class RegistryPublisher {
     return created.html_url;
   }
 
+  private async _syncCourseFiles(
+    token: string,
+    repo: string,
+    courseDir: vscode.Uri,
+    version: string,
+    onProgress: (msg: string) => void,
+  ): Promise<void> {
+    const files = await this._listCourseFiles(courseDir);
+    if (!files.some((file) => file.relativePath === 'course.json')) {
+      throw new Error(`No course.json found in ${courseDir.fsPath}.`);
+    }
+
+    let uploaded = 0;
+    for (const file of files) {
+      await this._putRepositoryFile(
+        token,
+        repo,
+        file.relativePath,
+        file.content,
+        `Publish course files for v${version}`,
+      );
+      uploaded += 1;
+      if (uploaded === files.length || uploaded % 5 === 0) {
+        onProgress(`Uploaded ${uploaded}/${files.length} course files…`);
+      }
+    }
+  }
+
+  private async _putRepositoryFile(
+    token: string,
+    repo: string,
+    filePath: string,
+    content: Uint8Array,
+    message: string,
+  ): Promise<void> {
+    const repoInfo = await this._request('GET', `/repos/${repo}`, token) as { default_branch: string };
+    const branch = repoInfo.default_branch;
+    let sha: string | undefined;
+
+    try {
+      const existing = await this._request(
+        'GET',
+        `/repos/${repo}/contents/${encodeURIComponentPath(filePath)}?ref=${encodeURIComponent(branch)}`,
+        token,
+      ) as { sha: string };
+      sha = existing.sha;
+    } catch (err) {
+      if (!this._isNotFound(err)) throw err;
+    }
+
+    await this._request('PUT', `/repos/${repo}/contents/${encodeURIComponentPath(filePath)}`, token, {
+      message,
+      branch,
+      content: Buffer.from(content).toString('base64'),
+      ...(sha ? { sha } : {}),
+    });
+  }
+
+  private async _listCourseFiles(courseDir: vscode.Uri): Promise<{ relativePath: string; content: Uint8Array }[]> {
+    const files: { relativePath: string; content: Uint8Array }[] = [];
+    await this._collectCourseFiles(courseDir, courseDir, files);
+    return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  }
+
+  private async _collectCourseFiles(
+    courseDir: vscode.Uri,
+    dir: vscode.Uri,
+    files: { relativePath: string; content: Uint8Array }[],
+  ): Promise<void> {
+    const entries = await vscode.workspace.fs.readDirectory(dir);
+    for (const [name, type] of entries) {
+      if (this._shouldSkipCourseFile(name)) continue;
+
+      const uri = vscode.Uri.joinPath(dir, name);
+      if (type === vscode.FileType.Directory) {
+        await this._collectCourseFiles(courseDir, uri, files);
+      } else if (type === vscode.FileType.File) {
+        files.push({
+          relativePath: path.relative(courseDir.fsPath, uri.fsPath).split(path.sep).join('/'),
+          content: await vscode.workspace.fs.readFile(uri),
+        });
+      }
+    }
+  }
+
+  private _shouldSkipCourseFile(name: string): boolean {
+    return ['.git', '.DS_Store', 'node_modules', 'dist', 'out'].includes(name);
+  }
+
   private async _ensureTag(
     token: string,
     repo: string,
     version: string,
   ): Promise<void> {
     const tagName = `v${version}`;
-
-    try {
-      await this._request('GET', `/repos/${repo}/git/ref/tags/${tagName}`, token);
-      return;
-    } catch (err) {
-      if (!this._isNotFound(err)) throw err;
-    }
 
     const repoInfo = await this._request(
       'GET',
@@ -107,6 +221,21 @@ export class RegistryPublisher {
       `/repos/${repo}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
       token,
     ) as { object: { sha: string } };
+
+    try {
+      await this._request('PATCH', `/repos/${repo}/git/refs/tags/${tagName}`, token, {
+        sha: head.object.sha,
+        force: true,
+      });
+      return;
+    } catch (err) {
+      if (this._isEmptyRepository(err)) {
+        throw new Error(
+          `Repository ${repo} is empty. Add an initial commit or let Instrktr create the repository before publishing.`,
+        );
+      }
+      if (!this._isNotFound(err)) throw err;
+    }
 
     try {
       await this._request('POST', `/repos/${repo}/git/refs`, token, {
@@ -138,28 +267,22 @@ export class RegistryPublisher {
       tags,
     };
 
-    // Load existing registry from Gist (if any)
-    const gistId = await this._resolveRegistryGistId(token);
+    const registry = this._getRegistryTarget();
     let current: { courses: typeof entry[] } = { courses: [] };
+    let sha: string | undefined;
 
-    if (gistId) {
-      try {
-        const gist = await this._request(
-          'GET',
-          `/gists/${gistId}`,
-          token,
-        ) as { files: Record<string, { content?: string }>; html_url: string };
-        const content = gist.files[REGISTRY_GIST_FILENAME]?.content;
-        if (content) {
-          current = JSON.parse(content);
-        }
-      } catch (err) {
-        if (this._isNotFound(err)) {
-          await this._clearRegistryGistId();
-        } else {
-          throw err;
-        }
+    try {
+      const existing = await this._request(
+        'GET',
+        `/repos/${registry.repo}/contents/${encodeURIComponentPath(registry.path)}?ref=${encodeURIComponent(registry.branch)}`,
+        token,
+      ) as { content?: string; encoding?: string; sha: string };
+      sha = existing.sha;
+      if (existing.content && existing.encoding === 'base64') {
+        current = JSON.parse(Buffer.from(existing.content, 'base64').toString('utf8'));
       }
+    } catch (err) {
+      if (!this._isNotFound(err)) throw err;
     }
 
     // Upsert the course entry
@@ -172,63 +295,30 @@ export class RegistryPublisher {
 
     const content = JSON.stringify(current, null, 2);
 
-    if (this._registryGistId) {
-      await this._request('PATCH', `/gists/${this._registryGistId}`, token, {
-        files: { [REGISTRY_GIST_FILENAME]: { content } },
-      });
-    } else {
-      const created = await this._request('POST', '/gists', token, {
-        description: REGISTRY_GIST_DESCRIPTION,
-        public: true,
-        files: { [REGISTRY_GIST_FILENAME]: { content } },
-      }) as { id: string };
-      this._registryGistId = created.id;
-      await this._globalState.update('authorRegistryGistId', this._registryGistId);
-    }
+    await this._request('PUT', `/repos/${registry.repo}/contents/${encodeURIComponentPath(registry.path)}`, token, {
+      message: `Publish ${course.id} v${course.version}`,
+      branch: registry.branch,
+      content: Buffer.from(`${content}\n`, 'utf8').toString('base64'),
+      ...(sha ? { sha } : {}),
+    });
 
-    const username = await this._getUsername(token);
-    // Canonical raw URL without a commit SHA — always returns latest revision
-    return `https://gist.githubusercontent.com/${username}/${this._registryGistId}/raw/${REGISTRY_GIST_FILENAME}`;
+    return registry.rawUrl;
   }
 
-  private async _getUsername(token: string): Promise<string> {
-    const user = await this._request('GET', '/user', token) as { login: string };
-    return user.login;
-  }
-
-  private async _resolveRegistryGistId(token: string): Promise<string | undefined> {
-    if (this._registryGistId) return this._registryGistId;
-
-    type GistItem = { id: string; files: Record<string, unknown> };
-    for (let page = 1; ; page++) {
-      const gists = await this._request(
-        'GET',
-        `/gists?per_page=100&page=${page}`,
-        token,
-      ) as unknown[];
-      if (!Array.isArray(gists) || gists.length === 0) break;
-
-      const found = (gists as GistItem[]).find(
-        (g) => REGISTRY_GIST_FILENAME in g.files,
-      );
-      if (found) {
-        this._registryGistId = found.id;
-        await this._globalState.update('authorRegistryGistId', this._registryGistId);
-        return this._registryGistId;
-      }
-
-      if (gists.length < 100) break;
-    }
-    return undefined;
-  }
-
-  private async _clearRegistryGistId(): Promise<void> {
-    this._registryGistId = undefined;
-    await this._globalState.update('authorRegistryGistId', undefined);
+  private _getRegistryTarget(): RegistryTarget {
+    const rawUrl = vscode.workspace
+      .getConfiguration('instrktrAuthor')
+      .get<string>('registryUrl', DEFAULT_REGISTRY_URL)
+      .trim() || DEFAULT_REGISTRY_URL;
+    return parseRegistryUrl(rawUrl);
   }
 
   private _isNotFound(err: unknown): boolean {
     return err instanceof GitHubApiError && err.status === 404;
+  }
+
+  private _isEmptyRepository(err: unknown): boolean {
+    return err instanceof GitHubApiError && err.status === 409;
   }
 
   private async _request(
@@ -265,4 +355,54 @@ class GitHubApiError extends Error {
   ) {
     super(`GitHub API ${method} ${path} → ${status}`);
   }
+}
+
+interface RegistryTarget {
+  rawUrl: string;
+  repo: string;
+  branch: string;
+  path: string;
+}
+
+function parseRegistryUrl(rawUrl: string): RegistryTarget {
+  const url = new URL(rawUrl);
+
+  if (url.hostname === 'raw.githubusercontent.com') {
+    const parts = url.pathname.split('/').filter(Boolean);
+    const [owner, repo] = parts;
+    if (!owner || !repo) throw new Error(`Unsupported registry URL: ${rawUrl}`);
+
+    if (parts[2] === 'refs' && parts[3] === 'heads') {
+      const branch = parts[4];
+      const path = parts.slice(5).join('/');
+      if (!branch || !path) throw new Error(`Unsupported registry URL: ${rawUrl}`);
+      return { rawUrl, repo: `${owner}/${repo}`, branch, path };
+    }
+
+    const branch = parts[2];
+    const path = parts.slice(3).join('/');
+    if (!branch || !path) throw new Error(`Unsupported registry URL: ${rawUrl}`);
+    return { rawUrl, repo: `${owner}/${repo}`, branch, path };
+  }
+
+  if (url.hostname === 'github.com') {
+    const parts = url.pathname.split('/').filter(Boolean);
+    const [owner, repo, blob, branch] = parts;
+    const path = parts.slice(4).join('/');
+    if (!owner || !repo || blob !== 'blob' || !branch || !path) {
+      throw new Error(`Unsupported registry URL: ${rawUrl}`);
+    }
+    return {
+      rawUrl: `https://raw.githubusercontent.com/${owner}/${repo}/refs/heads/${branch}/${path}`,
+      repo: `${owner}/${repo}`,
+      branch,
+      path,
+    };
+  }
+
+  throw new Error(`Unsupported registry URL: ${rawUrl}`);
+}
+
+function encodeURIComponentPath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
 }

@@ -833,6 +833,40 @@ textarea.field-input {
   display: block;
 }
 
+.manual-publish-panel {
+  margin-top: 10px;
+  border-top: 1px solid var(--vscode-panel-border);
+  padding-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.manual-publish-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.manual-publish-commands {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.1));
+  border-radius: 4px;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.manual-publish-note {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
 .copy-btn {
   align-self: flex-start;
 }

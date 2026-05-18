@@ -82,12 +82,15 @@ Before publishing, run the quality tools to:
 
 ### Publish a Course
 
-Publishing packages the course as a GitHub release and can update a personal registry Gist.
+Publishing packages the course as a GitHub release and updates an Instrktr registry JSON file in GitHub.
 
 1. Select the target GitHub repository.
 2. Run a dry run and review the release details.
 3. Confirm the release version and registry settings.
 4. Publish the release.
+
+By default, the registry is `https://raw.githubusercontent.com/chipset/instrktr-registry/refs/heads/main/registry.json`.
+Override `instrktrAuthor.registryUrl` if you maintain a different registry file. The signed-in GitHub account must have write access to the registry repository.
 
 The publish flow requires Git and GitHub access from the local machine. Use the dry run before creating a release.
 

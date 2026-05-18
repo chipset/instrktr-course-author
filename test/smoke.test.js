@@ -198,6 +198,15 @@ test('package contributes syntax editor settings', () => {
   assert.ok(props['instrktrAuthor.syntaxHighlighting']);
 });
 
+test('package contributes registry url setting', () => {
+  const pkg = JSON.parse(read('package.json'));
+  const props = pkg.contributes.configuration.properties;
+  assert.equal(
+    props['instrktrAuthor.registryUrl'].default,
+    'https://raw.githubusercontent.com/chipset/instrktr-registry/refs/heads/main/registry.json',
+  );
+});
+
 test('ci workflow packages the vsix artifact', () => {
   const ci = read('.github/workflows/ci.yml');
   assert.match(ci, /npm run typecheck/);
@@ -209,9 +218,60 @@ test('ci workflow packages the vsix artifact', () => {
 test('publisher explicitly creates version git tag before release', () => {
   const publisher = read('src/RegistryPublisher.ts');
   assert.match(publisher, /_ensureTag/);
+  assert.match(publisher, /PATCH', `\/repos\/\$\{repo\}\/git\/refs\/tags\/\$\{tagName\}`/);
   assert.match(publisher, /refs\/tags\/\$\{tagName\}/);
   assert.match(publisher, /git\/ref\/heads/);
   assert.match(publisher, /git\/refs/);
+});
+
+test('publisher uploads course files before tagging releases', () => {
+  const publisher = read('src/RegistryPublisher.ts');
+  const panel = read('src/CourseAuthorPanel.ts');
+  assert.match(publisher, /Uploading course files/);
+  assert.match(publisher, /_syncCourseFiles/);
+  assert.match(publisher, /relativePath === 'course\.json'/);
+  assert.match(publisher, /_putRepositoryFile/);
+  assert.match(panel, /this\._fileManager\.courseDir/);
+});
+
+test('publisher can create missing GitHub repos before publishing', () => {
+  const publisher = read('src/RegistryPublisher.ts');
+  const panel = read('src/CourseAuthorPanel.ts');
+  assert.match(publisher, /repositoryExists/);
+  assert.match(publisher, /createRepository/);
+  assert.match(publisher, /auto_init: true/);
+  assert.match(panel, /showWarningMessage\(/);
+  assert.match(panel, /Create repo/);
+});
+
+test('publisher updates configured GitHub registry file', () => {
+  const publisher = read('src/RegistryPublisher.ts');
+  assert.match(publisher, /DEFAULT_REGISTRY_URL/);
+  assert.match(publisher, /instrktrAuthor'\)\s*\.get<string>\('registryUrl'/);
+  assert.match(publisher, /\/repos\/\$\{registry\.repo\}\/contents\/\$\{encodeURIComponentPath\(registry\.path\)\}/);
+  assert.match(publisher, /Buffer\.from\(`\$\{content\}\\n`, 'utf8'\)\.toString\('base64'\)/);
+  assert.doesNotMatch(publisher, /REGISTRY_GIST/);
+});
+
+test('publish failures show manual CLI fallback commands', () => {
+  const main = read('webview-src/main.ts');
+  const styles = read('webview-src/styles.css');
+  assert.match(main, /buildManualPublishPanel/);
+  assert.match(main, /gh repo view/);
+  assert.match(main, /gh release create/);
+  assert.match(main, /git add course\.json steps assets/);
+  assert.match(main, /git push origin HEAD/);
+  assert.match(main, /git push origin/);
+  assert.match(styles, /manual-publish-panel/);
+});
+
+test('publish panel stays open across publish rerenders', () => {
+  const main = read('webview-src/main.ts');
+  assert.match(main, /let publishPanelOpen = false/);
+  assert.match(main, /publish-panel\$\{publishPanelOpen \? '' : ' hidden'\}/);
+  assert.match(main, /publishPanelOpen = true/);
+  assert.match(main, /lastPublishAttempt\.repo/);
+  assert.match(main, /lastPublishAttempt\.tags\.join/);
 });
 
 test('validator tester supports shell-backed snippets', () => {

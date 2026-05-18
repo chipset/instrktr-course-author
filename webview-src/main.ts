@@ -37,6 +37,14 @@ const pendingDeletedSteps: StepDef[] = [];
 const undoStack: CourseDef[] = [];
 const previewProgress: Record<string, ValidatorTestResult['status']> = {};
 let authorSettings: AuthorSettings = { syntaxStatus: 'always', syntaxHighlighting: true };
+let publishPanelOpen = false;
+let lastPublishAttempt: {
+  repo: string;
+  version: string;
+  tags: string[];
+  title: string;
+  description: string;
+} | null = null;
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -953,7 +961,7 @@ function renderHints(container: HTMLElement, hints: string[]): void {
 // ─── Publish panel ───────────────────────────────────────────────────────────
 
 function buildPublishPanel(): HTMLElement {
-  const panel = el('div', { class: 'publish-panel hidden', id: 'publish-panel' });
+  const panel = el('div', { class: `publish-panel${publishPanelOpen ? '' : ' hidden'}`, id: 'publish-panel' });
 
   const header = el('div', { class: 'publish-header' });
   header.appendChild(el('h3', { class: 'publish-title' }, 'Publish Course'));
@@ -964,14 +972,18 @@ function buildPublishPanel(): HTMLElement {
 
   const repoRow = el('div', { class: 'field-row' });
   repoRow.appendChild(el('label', { for: 'pub-repo', class: 'field-label' }, 'GitHub Repo'));
-  repoRow.appendChild(el('input', { id: 'pub-repo', class: 'field-input', type: 'text', placeholder: 'owner/repo-name' }));
+  const repoInput = el('input', { id: 'pub-repo', class: 'field-input', type: 'text', placeholder: 'owner/repo-name' });
+  if (lastPublishAttempt?.repo) repoInput.value = lastPublishAttempt.repo;
+  repoRow.appendChild(repoInput);
   repoRow.appendChild(el('button', { class: 'btn btn-ghost btn-sm', id: 'load-repos-btn', type: 'button' }, 'Pick repo'));
   repoRow.appendChild(el('span', { class: 'field-help' }, 'e.g. myuser/course-my-course'));
   body.appendChild(repoRow);
 
   const tagsRow = el('div', { class: 'field-row' });
   tagsRow.appendChild(el('label', { for: 'pub-tags', class: 'field-label' }, 'Tags'));
-  tagsRow.appendChild(el('input', { id: 'pub-tags', class: 'field-input', type: 'text', placeholder: 'git, beginner' }));
+  const tagsInput = el('input', { id: 'pub-tags', class: 'field-input', type: 'text', placeholder: 'git, beginner' });
+  if (lastPublishAttempt) tagsInput.value = lastPublishAttempt.tags.join(', ');
+  tagsRow.appendChild(tagsInput);
   tagsRow.appendChild(el('span', { class: 'field-help' }, 'Comma-separated'));
   body.appendChild(tagsRow);
 
@@ -1091,6 +1103,7 @@ function handlePublishProgressMsg(
   message: string,
   registryUrl?: string,
 ): void {
+  publishPanelOpen = true;
   const area = document.getElementById('publish-progress');
   const btn = document.getElementById('confirm-publish-btn') as HTMLButtonElement | null;
   if (!area) return;
@@ -1113,9 +1126,45 @@ function handlePublishProgressMsg(
     const copyBtn = area.querySelector<HTMLButtonElement>('.copy-btn');
     if (copyBtn) copyBtn.onclick = () => copyToClipboard(copyBtn.dataset.url ?? '', copyBtn);
   } else {
-    area.innerHTML = `<div class="progress-msg error">✕ ${escapeHtml(message)}</div>`;
+    area.innerHTML = `<div class="progress-msg error">✕ ${escapeHtml(message)}</div>${buildManualPublishPanel()}`;
     if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+    const copyBtn = area.querySelector<HTMLButtonElement>('.manual-publish-panel .copy-btn');
+    if (copyBtn) copyBtn.onclick = () => copyToClipboard(copyBtn.dataset.url ?? '', copyBtn);
   }
+}
+
+function buildManualPublishPanel(): string {
+  if (!lastPublishAttempt) return '';
+
+  const { repo, version, title, description } = lastPublishAttempt;
+  const tagName = `v${version}`;
+  const releaseNotes = `Course release ${tagName}`;
+  const repoDescription = description || title;
+  const commands = [
+    'gh auth status',
+    `gh repo view ${shellQuote(repo)} >/dev/null || gh repo create ${shellQuote(repo)} --public --add-readme --description ${shellQuote(repoDescription)}`,
+    'git add course.json steps assets 2>/dev/null || git add .',
+    `git commit -m ${shellQuote(`Publish course ${tagName}`)} 2>/dev/null || true`,
+    'git push origin HEAD',
+    'git fetch --tags origin',
+    `git tag ${shellQuote(tagName)} 2>/dev/null || true`,
+    `git push origin ${shellQuote(tagName)}`,
+    `gh release view ${shellQuote(tagName)} --repo ${shellQuote(repo)} >/dev/null || gh release create ${shellQuote(tagName)} --repo ${shellQuote(repo)} --title ${shellQuote(tagName)} --notes ${shellQuote(releaseNotes)}`,
+  ].join('\n');
+
+  return `<div class="manual-publish-panel">
+    <div class="manual-publish-header">
+      <div class="field-label">Manual CLI publish</div>
+      <button class="btn btn-ghost btn-sm copy-btn" data-url="${escapeHtml(commands)}">Copy</button>
+    </div>
+    <pre class="manual-publish-commands"><code>${escapeHtml(commands)}</code></pre>
+    <div class="manual-publish-note">Run these from the course git checkout, then retry Publish here to update the Instrktr registry.</div>
+  </div>`;
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function copyToClipboard(text: string, btn: HTMLButtonElement): void {
@@ -1146,10 +1195,13 @@ function attachEventListeners(): void {
 
   // Publish panel toggle
   document.getElementById('publish-btn')?.addEventListener('click', () => {
-    document.getElementById('publish-panel')?.classList.toggle('hidden');
+    const panel = document.getElementById('publish-panel');
+    panel?.classList.toggle('hidden');
+    publishPanelOpen = !panel?.classList.contains('hidden');
   });
   document.getElementById('publish-close')?.addEventListener('click', () => {
     document.getElementById('publish-panel')?.classList.add('hidden');
+    publishPanelOpen = false;
   });
   document.getElementById('confirm-publish-btn')?.addEventListener('click', handlePublish);
   document.getElementById('load-repos-btn')?.addEventListener('click', () => post({ command: 'listRepos' }));
@@ -1992,6 +2044,14 @@ async function handlePublish(): Promise<void> {
     'Publish',
   );
   if (!confirmed) return;
+  publishPanelOpen = true;
+  lastPublishAttempt = {
+    repo,
+    version: nextVersion,
+    tags,
+    title: state.course.title,
+    description: state.course.description ?? '',
+  };
   post({
     command: 'publishCourse',
     repo,

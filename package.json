@@ -82,6 +82,11 @@
           "type": "boolean",
           "default": true,
           "description": "Reserved for future editor integration. The built-in editor currently keeps native textarea rendering for readability."
+        },
+        "instrktrAuthor.registryUrl": {
+          "type": "string",
+          "default": "https://raw.githubusercontent.com/chipset/instrktr-registry/refs/heads/main/registry.json",
+          "description": "Raw GitHub URL for the Instrktr registry JSON file updated after publishing."
         }
       }
     }

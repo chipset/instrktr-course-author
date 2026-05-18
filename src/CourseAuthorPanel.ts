@@ -433,6 +433,9 @@ export class CourseAuthorPanel {
       course.version = bumpVersion(course.version, bumpType);
     }
 
+    const repoReady = await this._ensurePublishRepository(repo, session.accessToken, course);
+    if (!repoReady) return;
+
     try {
       await this._saveCourseSnapshot(course, fileWrites, fileDeletes);
       this._send({ command: 'setCourse', course });
@@ -447,7 +450,7 @@ export class CourseAuthorPanel {
 
     try {
       const registryUrl = await this._publisher.publish(
-        course, repo, tags, session.accessToken,
+        course, repo, tags, session.accessToken, this._fileManager.courseDir,
         (msg) => this._send({ command: 'publishProgress', status: 'progress', message: msg }),
       );
 
@@ -456,6 +459,43 @@ export class CourseAuthorPanel {
     } catch (err) {
       logError('Publish failed', err);
       this._send({ command: 'publishProgress', status: 'error', message: `Publish failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  private async _ensurePublishRepository(
+    repo: string,
+    token: string,
+    course: CourseDef,
+  ): Promise<boolean> {
+    this._send({ command: 'publishProgress', status: 'progress', message: `Checking GitHub repo ${repo}…` });
+
+    try {
+      if (await this._publisher.repositoryExists(token, repo)) return true;
+    } catch (err) {
+      logError('Failed to check publish repository', err);
+      this._send({ command: 'publishProgress', status: 'error', message: `Could not check GitHub repo: ${err instanceof Error ? err.message : String(err)}` });
+      return false;
+    }
+
+    const answer = await vscode.window.showWarningMessage(
+      `GitHub repo ${repo} does not exist. Create it now?`,
+      { modal: true },
+      'Create repo',
+    );
+    if (answer !== 'Create repo') {
+      this._send({ command: 'publishProgress', status: 'error', message: `Publish cancelled because ${repo} does not exist.` });
+      return false;
+    }
+
+    this._send({ command: 'publishProgress', status: 'progress', message: `Creating GitHub repo ${repo}…` });
+    try {
+      await this._publisher.createRepository(token, repo, course);
+      this._send({ command: 'publishProgress', status: 'progress', message: `Created GitHub repo ${repo}.` });
+      return true;
+    } catch (err) {
+      logError('Failed to create publish repository', err);
+      this._send({ command: 'publishProgress', status: 'error', message: `Could not create GitHub repo: ${err instanceof Error ? err.message : String(err)}` });
+      return false;
     }
   }
 
